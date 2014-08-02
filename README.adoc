@@ -1,0 +1,12 @@
+== open-email
+
+Open-Email is an approach to host your own infrastructure.
+The idea is to get back your privacy. 
+
+== TODO
+
+link:src/asciidoc/index.adoc[Index]
+
+== License
+
+TODO

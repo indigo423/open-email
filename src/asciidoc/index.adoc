@@ -1,0 +1,267 @@
+// Global settings
+:ascii-ids:
+:encoding: UTF-8
+:lang: en
+:icons: font
+:toc: left
+:toclevels: 8
+:numbered:
+
+= Open-Email
+
+
+Currently I am completly dependand on Google because I am using almost every service they provide.
+I even have a Google Android phone.
+Since recent events I decided to host my own infastrucutre to get back my privacy.
+
+The idea is to host as much as possible by myself and reduce the dependencies - not only to Google but to all services - to basically have everything under my control.
+
+There are a couple of howto's out there in the www which are really good, but I decided to document how I will run my infrastructure.
+
+[NOTE]
+I am not saying that Google or any other company/person named here is bad.
+I am saying, that I want to run my own services to have everything under my control.
+Everyone is free to do whatever they like.
+
+[CAUTION]
+Any tips/steps written here may not work for you.
+I am not responsible if something breaks.
+Be careful and always do a backup before modifiing your system.
+
+== Goal
+The goal is to host as much as possible by myself and reduce the dependencies - not only to Google but to all services - to basically have everything under my control.
+
+This includes, runnig my own...:
+ * mail server (including a web frontend)
+ * Google like Calendar, Contacts, Drive, etc. services
+ * backup strategy
+
+I also have to figure out how to get all the running services working with my Android 4.4.x phone.
+
+
+
+== Step 1: Get a server
+
+I want all services to be available not only from my local network but also from the internet (e.g. when I am not at home).
+Therefore to get started I need a server to host all the services.
+
+I decided to go with a link:http://en.wikipedia.org/wiki/Virtual_private_server[VPS (Virtual Private Server)] from link:http://www.contabo.de[Contabo].
+
+The reason for this is:
+
+ * 4 GB of RAM
+ * 200 GB HDD
+ * 100 Mbit/s uplink/downlink
+ * "real virtualization" (no openvz)
+ * ~ 8 euro per month
+
+[NOTE]
+It does not really matter what kind of server you are running.
+I had a smaller vserver before I switched to contabo, but the uplink/downlink was not as good, I only had 512MB of ram and about 50GB HDD.
+The overall performance lacked, therefore I would recommend a more potent setting.
+If you are not sure, most of the VPS providers offer a 30 days plan.
+You may also try link:http://aws.amazon.com[Amazon EC2]. They have a link:http://aws.amazon.com/free/[free tier] offer.
+
+As an operating system I am running the latest Ubuntu server release. Basically because I am used to Ubuntu.
+
+
+== Step 2: Backup
+
+The backup strategy is very straight forward:
+
+ * Create a hourly, daily, weekly, monthly backup of important data (this is an incremental backup) with `rsnapshot`
+ * Create a daily backup of all databases, encrypt the `rsnapshot` data with PGP and upload both to link:http://aws.amazon.com/s3/?nc1=h_l2_sc[Amazon S3].
+
+=== Configuring rsnapshot
+
+Install it:
+    $ sudo apt-get install rsnapshot
+
+Edit `/etc/rsnapshot.conf` (only changed values are shown)
+
+[source]
+----
+
+snapshot_root   /var/rsnapshot/
+exclude_file    /etc/rsnapshot-exclude.conf
+
+#########################################
+#           BACKUP INTERVALS            #
+# Must be unique and in ascending order #
+# i.e. hourly, daily, weekly, etc.      #
+#########################################
+retain          hourly          5  <1>
+retain          daily           7
+retain          weekly          4
+retain          monthly         3
+
+# LOCALHOST <2>
+backup  /home/  localhost/
+backup  /etc/   localhost/
+backup  /usr/share/     localhost/
+backup  /opt/   localhost/
+backup  /var/   localhost/
+backup  /root/  localhost/
+----
+<1> We setup `rsnapshot` to create hard links for the last 5 hours, 7 days, 4 weeks and 3 months.
+Therefore we have the last 3 months in total as a backup.
+<2> The folders to backup. `localhost` defines the root name of the backup (see `/var/rsnapshot` after creating a backup).
+
+[NOTE]
+Do not use spaces.
+Always use tabs.
+Also do not forget to add a trailing `/` at the end of each path and host name.
+
+
+Create `/etc/rsnapshot-exclude.conf` to exclude unnecessary data:
+
+[source]
+----
+/var/archives
+/var/backups
+/var/rsnapshot
+/var/tmp
+/var/cache
+----
+
+ * /var/archives is created by `backup-manager`
+ * /var/rsnapshots is created by `rsnapshot`
+
+
+=== Configuring backup-manager
+
+Install it:
+
+    $ sudo apt-get install backup-manager
+
+Edit `/etc/backup-manager.conf` (only changed values are shown):
+
+[source]
+----
+export BM_ARCHIVE_TTL="2" <1>
+export BM_ARCHIVE_METHOD="tarball mysql" <2>
+export BM_ENCRYPTION_METHOD="gpg" <3>
+export BM_ENCRYPTION_RECIPIENT="m.v.rueden@open-email.de" <4>
+export BM_TARBALL_DIRECTORIES="/var/rsnapshot" <5>
+
+export BM_MYSQL_ADMINLOGIN="backup-user" <6>
+export BM_MYSQL_ADMINPASS="backup-pw" <7>
+
+export BM_UPLOAD_METHOD="s3" <8>
+export BM_UPLOAD_S3_DESTINATION="backup-open-email-de" <9>
+export BM_UPLOAD_S3_ACCESS_KEY="your s3 access key" <10>
+export BM_UPLOAD_S3_SECRET_KEY="your s3 secret key" <11>
+export BM_UPLOAD_S3_PURGE="true" <12>
+
+----
+<1> Number of archives to create before the old ones are deleted. I go with 2, because `rsnapshot` is doing all the work.
+<2> `rsnapshot` is creating incremental backups, so we just need to `tarball` them. `mysql` creates a dump of the database.
+<3> The backups are uploaded to Amazon S3, So I definitely want them to be encrypted.
+<4> TODO
+<5> Which directories to backup. We only need `/var/rsnapshot`, because `rsnapshot` is doing the backups.
+<6> The database user to perform the backup. Should not be root. Create a read only overall database user instead. TODO how to create a database user
+<7> The password for the database backup user
+<8> We want to upload to Amazon S3
+<9> The Amazon S3 bucket name.
+<10> Your Amazon S3 Access Key
+<11> Your Amazon S3 Secret Key
+<12> Deletes the old backup before uploading the new.
+
+[CAUTION]
+Be careful when encrypting your backup.
+You need to ensure that you do not lose the public and private keys of the `BM_ENCRYPTION_RECIPIENT` user.
+Otherwise your backups are lost.
+
+[TIP]
+By default `mysql` creates a dump of all databases.
+If you instead want to dump each database separately this might help:
+TODO ....
+
+[NOTE]
+You need to ensure that `BM_BURNING_METHOD` is set to `none`.
+Otherwise your backup/upload cannot complete.
+
+=== Schedule periodically backups using cron
+
+    $ sudo crontab -e
+
+[source]
+.crontab
+----
+# each day at 08:00
+0 8 * * * /usr/sbin/backup-manager
+
+@hourly /usr/bin/rsnapshot hourly
+0 2 * * * /usr/bin/rsnapshot daily
+0 4 * * 1 /usr/bin/rsnapshot weekly
+0 6 1 * * /usr/bin/rsnapshot monthly
+----
+
+=== Test everything
+
+    $ sudo /usr/bin/rsnapshot hourly
+
+May take a while. Should create data at `/var/rsnapshot`.
+
+Verify your backup:
+    TODO
+
+    $ sudo /usr/sbin/backup-manager
+
+This also may take a while.
+Especially when it starts uploading the backup to Amazon S3.
+You can `watch` the backup creation with `sudo watch -n1 ls -la /var/archives`.
+If the file size does not increase anymore, you may watch your traffic with `iftop` or `slurm`.
+
+TODO explain this?
+
+
+== Trouble Shooting
+
+=== s3cmd not found or similar error.
+I encountered a `s3cmd not found` error when the `backup-manager` tried to upload the created archives.
+I had to manually install `s3cmd`:
+
+    $ sudo apt-get install s3cmd
+
+That fixed my issue.
+
+Source: http://tecadmin.net/install-s3cmd-manage-amazon-s3-buckets/
+
+=== perl: warning: Setting locale failed
+
+[source]
+.Error message
+----
+perl: warning: Setting locale failed.
+perl: warning: Please check that your locale settings:
+    LANGUAGE = (unset),
+    LC_ALL = (unset),
+    LANG = "de_DE.UTF-8"
+    are supported and installed on your system.
+perl: warning: Falling back to the standard locale ("C").
+locale: Cannot set LC_CTYPE to default locale: No such file or directory
+locale: Cannot set LC_MESSAGES to default locale: No such file or directory
+locale: Cannot set LC_ALL to default locale: No such file or directory
+----
+
+[source, bash]
+.How to fix
+----
+# Replace with your LANG error (extract from your error message)
+$ locale-gen de_DE de_DE.UTF-8
+$ dpkg-reconfigure locales
+----
+
+Source: http://ubuntuforums.org/showthread.php?t=1346581
+
+== TODO
+
+ * Setting up firewall
+ * Setting up a fall back mail server
+ * Setting up PGP
+
+
+
+
+
